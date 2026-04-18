@@ -1,6 +1,6 @@
 import os
 import customtkinter as ctk
-from student_data import load_students, build_hash_table
+from student_data import load_students, save_students, build_service
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -50,10 +50,11 @@ class MainWindow(ctk.CTk):
 
         # Resolve mock_data.json relative to this file's directory
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        self._students = load_students(os.path.join(base_dir, "mock_data.json"))
-        self._hash_table = build_hash_table(self._students)
-        self._filtered_students = self._students
-        
+        self._data_path = os.path.join(base_dir, "mock_data.json")
+        raw_students = load_students(self._data_path)
+        self._service = build_service(raw_students)
+        self._filtered_students = self._service.get_sorted()
+
 
         self._build_ui()
 
@@ -85,21 +86,30 @@ class MainWindow(ctk.CTk):
         ctk.CTkButton(sidebar, text="＋  Add Student", font=FONT_BTN,
                       fg_color="transparent", hover_color=BG_CARD,
                       text_color=ACCENT, anchor="w", border_width=0,
-                      corner_radius=6, height=38
+                      corner_radius=6, height=38,
+                      command=self._open_add
                       ).grid(row=4, column=0, padx=12, pady=2, sticky="ew")
 
         ctk.CTkButton(sidebar, text="－  Remove Student", font=FONT_BTN,
                       fg_color="transparent", hover_color=BG_CARD,
                       text_color=DANGER, anchor="w", border_width=0,
-                      corner_radius=6, height=38
+                      corner_radius=6, height=38,
+                      command=self._open_remove
                       ).grid(row=5, column=0, padx=12, pady=2, sticky="ew")
+
+        ctk.CTkButton(sidebar, text="✎  Edit Student", font=FONT_BTN,
+                      fg_color="transparent", hover_color=BG_CARD,
+                      text_color=TEXT_PRI, anchor="w", border_width=0,
+                      corner_radius=6, height=38,
+                      command=self._open_edit
+                      ).grid(row=6, column=0, padx=12, pady=2, sticky="ew")
 
         ctk.CTkButton(sidebar, text="⌕  Find Student", font=FONT_BTN,
                       fg_color="transparent", hover_color=BG_CARD,
                       text_color=ACCENT2, anchor="w", border_width=0,
                       corner_radius=6, height=38,
                       command=self._open_search
-                      ).grid(row=6, column=0, padx=12, pady=2, sticky="ew")
+                      ).grid(row=7, column=0, padx=12, pady=2, sticky="ew")
                         
 
         # ── Main panel ─────────────────────────────────────────────────────────
@@ -184,13 +194,13 @@ class MainWindow(ctk.CTk):
         status_bar.grid(row=3, column=0, sticky="ew")
         status_bar.grid_propagate(False)
         self._status_label = ctk.CTkLabel(status_bar,
-                                   text=f"{len(self._students)} students loaded",
+                                   text=f"{len(self._service)} students loaded",
                                    font=FONT_MONO, text_color=TEXT_SEC)
         self._status_label.grid(row=0, column=0, padx=16, sticky="w")
     def _populate_rows(self, parent: ctk.CTkScrollableFrame, students: list[dict] = None):
         """Build one label-row per student inside the scrollable frame."""
         if students is None:
-            students = self._students
+            students = self._service.get_sorted()
     
         self._row_frames = {}
         self._row_defaults = {}
@@ -244,7 +254,7 @@ class MainWindow(ctk.CTk):
                                    text_color=DANGER)
                 return
 
-            student = self._hash_table.get(int(raw))   # O(1) lookup
+            student = self._service.find(int(raw))   # O(1) lookup via hash table
             if student:
                 result_label.configure(
                     text=f"✓  {student['first_name']} {student['last_name']}\n"
@@ -260,7 +270,345 @@ class MainWindow(ctk.CTk):
         ctk.CTkButton(dialog, text="Search", font=FONT_BTN,
                   fg_color=ACCENT, text_color="#ffffff",
                   command=do_search).pack()
-        
+
+    # ────────────────────────────────────────────────────────────────────────
+    #  Add Student
+    # ────────────────────────────────────────────────────────────────────────
+    def _open_add(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Add Student")
+        dialog.geometry("460x560")
+        dialog.configure(fg_color=BG_PANEL)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="＋  Add New Student",
+                     font=FONT_HEAD, text_color=ACCENT
+                     ).pack(pady=(20, 16))
+
+        form = ctk.CTkFrame(dialog, fg_color="transparent")
+        form.pack(padx=30, fill="x")
+
+        fields = [
+            ("Student ID",  "student_id"),
+            ("First Name",  "first_name"),
+            ("Last Name",   "last_name"),
+            ("Email",       "email"),
+            ("Major",       "major"),
+            ("GPA (0-4.0)", "gpa"),
+        ]
+        entries = {}
+        for label_text, key in fields:
+            ctk.CTkLabel(form, text=label_text, font=FONT_LABEL,
+                         text_color=TEXT_SEC, anchor="w"
+                         ).pack(fill="x", pady=(0, 2))
+            entry = ctk.CTkEntry(form, font=FONT_MONO,
+                                 fg_color=BG_CARD, border_color=BORDER,
+                                 text_color=TEXT_PRI)
+            entry.pack(fill="x", pady=(0, 8))
+            entries[key] = entry
+
+        entries["student_id"].focus()
+
+        result_label = ctk.CTkLabel(dialog, text="", font=FONT_MONO,
+                                    text_color=TEXT_PRI, wraplength=400)
+        result_label.pack(pady=(8, 4), padx=20)
+
+        def do_add():
+            data = {k: e.get().strip() for k, e in entries.items()}
+
+            # Validate student_id
+            if not data["student_id"].isdigit():
+                result_label.configure(text="⚠ Student ID must be a number.",
+                                       text_color=DANGER)
+                return
+            sid = int(data["student_id"])
+            if self._service.exists(sid):
+                result_label.configure(text=f"⚠ Student ID {sid} already exists.",
+                                       text_color=DANGER)
+                return
+
+            # Validate required fields
+            for key in ("first_name", "last_name", "major", "email"):
+                if not data[key]:
+                    result_label.configure(
+                        text=f"⚠ {key.replace('_', ' ').title()} cannot be empty.",
+                        text_color=DANGER)
+                    return
+            if "@" not in data["email"]:
+                result_label.configure(text="⚠ Email must contain '@'.",
+                                       text_color=DANGER)
+                return
+
+            # Validate GPA
+            try:
+                gpa = float(data["gpa"])
+                if not 0.0 <= gpa <= 4.0:
+                    raise ValueError
+            except ValueError:
+                result_label.configure(
+                    text="⚠ GPA must be a number between 0.0 and 4.0.",
+                    text_color=DANGER)
+                return
+
+            # Build and insert the record
+            student = {
+                "student_id": sid,
+                "first_name": data["first_name"],
+                "last_name":  data["last_name"],
+                "email":      data["email"],
+                "major":      data["major"],
+                "gpa":        gpa,
+            }
+            # Insert into all three data structures atomically
+            self._service.add(student)
+            self._persist()
+
+            # Refresh table (re-applies any active filter)
+            self._do_filter()
+            dialog.destroy()
+
+        btn_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_row.pack(pady=(4, 0))
+        ctk.CTkButton(btn_row, text="Cancel", font=FONT_BTN,
+                      fg_color="transparent", hover_color=BG_CARD,
+                      text_color=TEXT_SEC, border_width=1,
+                      border_color=BORDER, width=100,
+                      command=dialog.destroy
+                      ).pack(side="left", padx=6)
+        ctk.CTkButton(btn_row, text="Add Student", font=FONT_BTN,
+                      fg_color=ACCENT, text_color="#ffffff", width=140,
+                      command=do_add
+                      ).pack(side="left", padx=6)
+
+    # ────────────────────────────────────────────────────────────────────────
+    #  Remove Student
+    # ────────────────────────────────────────────────────────────────────────
+    def _open_remove(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Remove Student")
+        dialog.geometry("420x340")
+        dialog.configure(fg_color=BG_PANEL)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="－  Remove Student",
+                     font=FONT_HEAD, text_color=DANGER
+                     ).pack(pady=(20, 12))
+
+        ctk.CTkLabel(dialog, text="Enter Student ID to remove:",
+                     font=FONT_LABEL, text_color=TEXT_SEC
+                     ).pack(pady=(0, 6))
+
+        entry = ctk.CTkEntry(dialog, font=FONT_BTN, width=200,
+                             fg_color=BG_CARD, border_color=BORDER,
+                             text_color=TEXT_PRI)
+        entry.pack()
+        entry.focus()
+
+        preview_label = ctk.CTkLabel(dialog, text="", font=FONT_MONO,
+                                     text_color=TEXT_PRI, wraplength=360)
+        preview_label.pack(pady=14, padx=20)
+
+        # Holds the currently-previewed student so the Remove button knows what to delete
+        target = {"student": None}
+
+        def do_lookup(event=None):
+            raw = entry.get().strip()
+            if not raw:
+                preview_label.configure(text="", text_color=TEXT_PRI)
+                target["student"] = None
+                remove_btn.configure(state="disabled")
+                return
+            if not raw.isdigit():
+                preview_label.configure(text="⚠ Please enter a valid numeric ID.",
+                                        text_color=DANGER)
+                target["student"] = None
+                remove_btn.configure(state="disabled")
+                return
+            student = self._service.find(int(raw))
+            if not student:
+                preview_label.configure(text=f"✗ No student found with ID {raw}.",
+                                        text_color=DANGER)
+                target["student"] = None
+                remove_btn.configure(state="disabled")
+                return
+            preview_label.configure(
+                text=f"{student['first_name']} {student['last_name']}\n"
+                     f"Major: {student['major']}  |  GPA: {student['gpa']}\n\n"
+                     f"Click 'Remove' to confirm deletion.",
+                text_color=TEXT_PRI)
+            target["student"] = student
+            remove_btn.configure(state="normal")
+
+        def do_remove():
+            student = target["student"]
+            if not student:
+                return
+            sid = student["student_id"]
+            # Remove from all three data structures atomically
+            self._service.remove(sid)
+            self._persist()
+            self._do_filter()
+            dialog.destroy()
+
+        entry.bind("<KeyRelease>", do_lookup)
+        entry.bind("<Return>", do_lookup)
+
+        btn_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_row.pack(pady=(4, 0))
+        ctk.CTkButton(btn_row, text="Cancel", font=FONT_BTN,
+                      fg_color="transparent", hover_color=BG_CARD,
+                      text_color=TEXT_SEC, border_width=1,
+                      border_color=BORDER, width=100,
+                      command=dialog.destroy
+                      ).pack(side="left", padx=6)
+        remove_btn = ctk.CTkButton(btn_row, text="Remove", font=FONT_BTN,
+                                   fg_color=DANGER, text_color="#ffffff",
+                                   width=140, state="disabled",
+                                   command=do_remove)
+        remove_btn.pack(side="left", padx=6)
+
+    # ────────────────────────────────────────────────────────────────────────
+    #  Edit Student
+    # ────────────────────────────────────────────────────────────────────────
+    def _open_edit(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Edit Student")
+        dialog.geometry("460x620")
+        dialog.configure(fg_color=BG_PANEL)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="✎  Edit Student",
+                     font=FONT_HEAD, text_color=TEXT_PRI
+                     ).pack(pady=(20, 12))
+
+        # Step 1: ID lookup row at the top
+        lookup_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        lookup_row.pack(padx=30, fill="x", pady=(0, 8))
+        ctk.CTkLabel(lookup_row, text="Student ID:", font=FONT_LABEL,
+                     text_color=TEXT_SEC).pack(side="left", padx=(0, 8))
+        id_entry = ctk.CTkEntry(lookup_row, font=FONT_MONO, width=120,
+                                fg_color=BG_CARD, border_color=BORDER,
+                                text_color=TEXT_PRI)
+        id_entry.pack(side="left")
+        id_entry.focus()
+
+        # Step 2: Editable fields (disabled until a student is loaded)
+        form = ctk.CTkFrame(dialog, fg_color="transparent")
+        form.pack(padx=30, fill="x", pady=(10, 4))
+
+        editable_fields = [
+            ("First Name",  "first_name"),
+            ("Last Name",   "last_name"),
+            ("Email",       "email"),
+            ("Major",       "major"),
+            ("GPA (0-4.0)", "gpa"),
+        ]
+        entries = {}
+        for label_text, key in editable_fields:
+            ctk.CTkLabel(form, text=label_text, font=FONT_LABEL,
+                         text_color=TEXT_SEC, anchor="w"
+                         ).pack(fill="x", pady=(0, 2))
+            entry = ctk.CTkEntry(form, font=FONT_MONO,
+                                 fg_color=BG_CARD, border_color=BORDER,
+                                 text_color=TEXT_PRI,
+                                 state="disabled")
+            entry.pack(fill="x", pady=(0, 8))
+            entries[key] = entry
+
+        result_label = ctk.CTkLabel(dialog, text="", font=FONT_MONO,
+                                    text_color=TEXT_PRI, wraplength=400)
+        result_label.pack(pady=(4, 4), padx=20)
+
+        # Track the currently-loaded student ID so Save knows what to modify
+        target = {"sid": None}
+
+        def do_load(event=None):
+            raw = id_entry.get().strip()
+            if not raw.isdigit():
+                result_label.configure(text="⚠ Enter a numeric ID.",
+                                       text_color=DANGER)
+                return
+            student = self._service.find(int(raw))
+            if not student:
+                result_label.configure(text=f"✗ No student found with ID {raw}.",
+                                       text_color=DANGER)
+                target["sid"] = None
+                for e in entries.values():
+                    e.configure(state="disabled")
+                save_btn.configure(state="disabled")
+                return
+
+            # Populate and enable all fields
+            target["sid"] = student["student_id"]
+            for key, entry in entries.items():
+                entry.configure(state="normal")
+                entry.delete(0, "end")
+                entry.insert(0, str(student.get(key, "")))
+            save_btn.configure(state="normal")
+            result_label.configure(
+                text=f"✓ Loaded {student['first_name']} {student['last_name']}. "
+                     f"Edit fields below and click Save.",
+                text_color=ACCENT)
+
+        def do_save():
+            if target["sid"] is None:
+                return
+            data = {k: e.get().strip() for k, e in entries.items()}
+
+            # Validate required fields
+            for key in ("first_name", "last_name", "major", "email"):
+                if not data[key]:
+                    result_label.configure(
+                        text=f"⚠ {key.replace('_', ' ').title()} cannot be empty.",
+                        text_color=DANGER)
+                    return
+            if "@" not in data["email"]:
+                result_label.configure(text="⚠ Email must contain '@'.",
+                                       text_color=DANGER)
+                return
+            try:
+                gpa = float(data["gpa"])
+                if not 0.0 <= gpa <= 4.0:
+                    raise ValueError
+            except ValueError:
+                result_label.configure(
+                    text="⚠ GPA must be a number between 0.0 and 4.0.",
+                    text_color=DANGER)
+                return
+
+            # Build the update dict and apply
+            updates = {
+                "first_name": data["first_name"],
+                "last_name":  data["last_name"],
+                "email":      data["email"],
+                "major":      data["major"],
+                "gpa":        gpa,
+            }
+            self._service.modify(target["sid"], updates)
+            self._persist()
+            self._do_filter()
+            dialog.destroy()
+
+        id_entry.bind("<Return>", do_load)
+
+        btn_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_row.pack(pady=(4, 0))
+        ctk.CTkButton(btn_row, text="Load", font=FONT_BTN,
+                      fg_color=ACCENT2, text_color="#ffffff", width=100,
+                      command=do_load
+                      ).pack(side="left", padx=6)
+        ctk.CTkButton(btn_row, text="Cancel", font=FONT_BTN,
+                      fg_color="transparent", hover_color=BG_CARD,
+                      text_color=TEXT_SEC, border_width=1,
+                      border_color=BORDER, width=100,
+                      command=dialog.destroy
+                      ).pack(side="left", padx=6)
+        save_btn = ctk.CTkButton(btn_row, text="Save", font=FONT_BTN,
+                                 fg_color=ACCENT, text_color="#ffffff",
+                                 width=100, state="disabled",
+                                 command=do_save)
+        save_btn.pack(side="left", padx=6)
+
     def _apply_filter(self):
         # Cancel previous scheduled filter
         if hasattr(self, '_filter_after_id'):
@@ -270,15 +618,21 @@ class MainWindow(ctk.CTk):
         self._filter_after_id = self.after(300, self._do_filter)
 
     def _do_filter(self):
-        major_q = self._major_var.get().strip().lower()
-        last_q  = self._last_var.get().strip().lower()
-
-        self._filtered_students = [
-            s for s in self._students
-            if (not major_q or major_q in s.get("major", "").lower())
-            and (not last_q  or last_q  in s.get("last_name", "").lower())
-        ]
+        self._filtered_students = self._service.filter(
+            major=self._major_var.get(),
+            last_name=self._last_var.get(),
+        )
         self._refresh_table()
+
+    def _persist(self):
+        """Save the current dataset to JSON. Called after every mutation."""
+        try:
+            save_students(self._data_path, self._service.get_sorted())
+        except OSError as err:
+            # Don't crash the UI if disk write fails — just surface it in the status bar
+            self._status_label.configure(
+                text=f"⚠ Failed to save: {err}", text_color=DANGER
+            )
 
     def _clear_filter(self):
         self._major_var.set("")
@@ -289,5 +643,5 @@ class MainWindow(ctk.CTk):
             widget.destroy()
         self._populate_rows(self._scroll_frame, self._filtered_students)
         self._status_label.configure(
-            text=f"{len(self._filtered_students)} of {len(self._students)} students"
+            text=f"{len(self._filtered_students)} of {len(self._service)} students"
         )
