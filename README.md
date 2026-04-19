@@ -1,4 +1,4 @@
-#In order to run our appliction, you will need to install the following libraries:
+#In order to run our appliction, you will need to install the following libraries:#
 
 ##intalling Python:
 If you do not have python installed in your enviorment, navigate to the link below to install it.
